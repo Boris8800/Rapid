@@ -1,0 +1,18 @@
+{
+  "title": "Rapid Roads - Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Backend Up",
+      "targets": [
+        {
+          "expr": "up{job=\"rapidroads-backend\"}",
+          "legendFormat": "backend"
+        }
+      ]
+    }
+  ]
+}

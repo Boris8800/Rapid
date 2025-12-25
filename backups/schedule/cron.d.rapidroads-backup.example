@@ -1,0 +1,6 @@
+# Install on the VPS as: /etc/cron.d/rapidroads-backup
+# Runs daily at 02:15 UTC
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+15 2 * * * root cd /opt/rapidroads-production && BACKUP_DIR=/opt/rapidroads-production/backups KEEP_DAYS=14 bash scripts/backup-database.sh >> backups/logs/backup.log 2>&1

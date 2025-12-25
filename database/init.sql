@@ -1,0 +1,3 @@
+-- Rapid Roads Taxi System - PostgreSQL init
+-- Intentionally minimal; schema/bootstrap is in database/migrations.sql.
+-- This file remains for backwards compatibility if you later split init steps.

@@ -1,0 +1,83 @@
+# Developer-friendly compose (optional).
+# Runs the full stack locally with HTTP only.
+# Production uses docker-compose.production.yml + nginx TLS/WAF.
+
+name: rapidroads
+
+networks:
+	internal:
+
+volumes:
+	postgres_data:
+	redis_data:
+
+services:
+	postgres:
+		image: postgis/postgis:15-3.4-alpine
+		container_name: rapidroads-postgres-dev
+		environment:
+			POSTGRES_DB: ${POSTGRES_DB:-rapidroads}
+			POSTGRES_USER: ${POSTGRES_USER:-rapidroads_admin}
+			POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rapidroads_dev_password}
+		volumes:
+			- postgres_data:/var/lib/postgresql/data
+			- ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+			- ./database/migrations.sql:/docker-entrypoint-initdb.d/02-migrations.sql:ro
+			- ./database/seed-data.sql:/docker-entrypoint-initdb.d/03-seed.sql:ro
+		networks:
+			- internal
+		restart: unless-stopped
+
+	redis:
+		image: redis:7-alpine
+		container_name: rapidroads-redis-dev
+		command: ["redis-server", "--appendonly", "yes"]
+		volumes:
+			- redis_data:/data
+		networks:
+			- internal
+		restart: unless-stopped
+
+	backend-api:
+		build:
+			context: ./backend
+			dockerfile: Dockerfile.production
+		container_name: rapidroads-backend-dev
+		environment:
+			NODE_ENV: development
+			PORT: 4000
+			POSTGRES_HOST: postgres
+			POSTGRES_PORT: 5432
+			POSTGRES_DB: ${POSTGRES_DB:-rapidroads}
+			POSTGRES_USER: ${POSTGRES_USER:-rapidroads_admin}
+			POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rapidroads_dev_password}
+			REDIS_HOST: redis
+			REDIS_PORT: 6379
+			JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret}
+			JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev_refresh_secret}
+			CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+		ports:
+			- "4000:4000"
+		depends_on:
+			- postgres
+			- redis
+		networks:
+			- internal
+		restart: unless-stopped
+
+	frontend-web:
+		build:
+			context: ./frontend
+			dockerfile: Dockerfile.production
+		container_name: rapidroads-frontend-dev
+		environment:
+			NODE_ENV: production
+			PORT: 3000
+			NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+		ports:
+			- "3000:3000"
+		depends_on:
+			- backend-api
+		networks:
+			- internal
+		restart: unless-stopped

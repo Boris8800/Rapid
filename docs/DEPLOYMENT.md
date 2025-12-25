@@ -1,0 +1,31 @@
+# Deployment (Production)
+
+## DNS
+Point these records to `5.249.164.40`:
+- `A @` → `5.249.164.40`
+- `A www` → `5.249.164.40`
+- `A api` → `5.249.164.40`
+- `A driver` → `5.249.164.40`
+- `A admin` → `5.249.164.40`
+
+## VPS install path
+Recommended: `/opt/rapidroads-production`
+
+## One-command deploy
+1. Copy repo to VPS.
+2. Copy `.env.production.example` to `.env.production` on the VPS, then set real secrets.
+3. Run:
+   - `sudo bash scripts/deploy-rapidroads.sh`
+
+Optional:
+- Start monitoring too: `sudo START_MONITORING=true bash scripts/deploy-rapidroads.sh`
+
+## TLS
+TLS is bootstrapped by `scripts/setup-ssl.sh` using Let’s Encrypt **webroot** validation.
+It requests individual certs for each hostname and reloads Nginx.
+
+## Monitoring
+Start monitoring stack:
+- `docker compose -f docker-compose.monitoring.yml up -d`
+
+Grafana runs on the internal docker network by default. Expose it only via SSH tunnel or add an Nginx site later.
