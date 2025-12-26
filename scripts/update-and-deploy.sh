@@ -17,6 +17,7 @@ set -euo pipefail
 
 AUTO_STASH="${AUTO_STASH:-true}"
 FORCE_RESET="${FORCE_RESET:-false}"
+AUTO_DNS_CHECK="${AUTO_DNS_CHECK:-true}"
 
 print() { printf '%s\n' "$*"; }
 
@@ -32,6 +33,100 @@ require_cmd() {
   if ! command -v "$cmd" >/dev/null 2>&1; then
     print "Missing required command: $cmd" >&2
     exit 1
+  fi
+}
+
+resolve_ipv4() {
+  local host="$1"
+
+  if command -v dig >/dev/null 2>&1; then
+    dig +short "${host}" A | head -n 1
+    return 0
+  fi
+
+  if command -v getent >/dev/null 2>&1; then
+    # getent is available on most Ubuntu installs and does not require extra packages.
+    getent ahostsv4 "${host}" 2>/dev/null | awk 'NR==1{print $1}'
+    return 0
+  fi
+
+  if command -v nslookup >/dev/null 2>&1; then
+    nslookup "${host}" 2>/dev/null | awk '/^Address: /{print $2}' | head -n 1
+    return 0
+  fi
+
+  return 1
+}
+
+detect_public_ip() {
+  # Best-effort: only used when VPS_IP isn't provided.
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS https://api.ipify.org || true
+  fi
+}
+
+auto_set_skip_letsencrypt() {
+  # Respect explicit user choice
+  if [ -n "${SKIP_LETSENCRYPT+x}" ]; then
+    return
+  fi
+
+  if [ "${AUTO_DNS_CHECK}" != "true" ]; then
+    return
+  fi
+
+  if [ ! -f ./.env.production ]; then
+    print "[dns] .env.production not found; defaulting SKIP_LETSENCRYPT=true"
+    export SKIP_LETSENCRYPT=true
+    return
+  fi
+
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env.production
+  set +a
+
+  local domain_root
+  domain_root="${DOMAIN_ROOT:-${DOMAIN:-rapidroad.uk}}"
+
+  local expected_ip
+  expected_ip="${VPS_IP:-}"
+  if [ -z "${expected_ip}" ]; then
+    expected_ip="$(detect_public_ip)"
+  fi
+
+  if [ -z "${expected_ip}" ]; then
+    print "[dns] Could not determine server public IP (set VPS_IP in .env.production)."
+    print "[dns] Defaulting SKIP_LETSENCRYPT=true"
+    export SKIP_LETSENCRYPT=true
+    return
+  fi
+
+  local domains=(
+    "${domain_root}"
+    "www.${domain_root}"
+    "api.${domain_root}"
+    "driver.${domain_root}"
+    "admin.${domain_root}"
+  )
+
+  local ok=true
+  local d resolved
+  for d in "${domains[@]}"; do
+    resolved="$(resolve_ipv4 "${d}" || true)"
+    if [ -z "${resolved}" ] || [ "${resolved}" != "${expected_ip}" ]; then
+      ok=false
+      print "[dns] ${d} -> ${resolved:-<no A record>} (expected ${expected_ip})"
+    fi
+  done
+
+  if [ "${ok}" = true ]; then
+    print "[dns] DNS matches server IP (${expected_ip}). Using Let's Encrypt."
+    export SKIP_LETSENCRYPT=false
+  else
+    print "[dns] DNS not ready. Using dummy certs (SKIP_LETSENCRYPT=true)."
+    print "[dns] Re-run once DNS points to ${expected_ip} to request real certs."
+    export SKIP_LETSENCRYPT=true
   fi
 }
 
@@ -97,6 +192,8 @@ main() {
 
   print "[update] Syncing to origin/main"
   sync_to_origin_main
+
+  auto_set_skip_letsencrypt
 
   print "[deploy] Running deploy script"
   bash scripts/deploy-rapidroads.sh
