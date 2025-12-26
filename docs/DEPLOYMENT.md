@@ -17,6 +17,10 @@ Recommended: `/opt/rapidroads-production`
 3. Run:
    - `sudo bash scripts/deploy-rapidroads.sh`
 
+## Fresh VPS deploy (from scratch)
+On a clean Ubuntu/Debian VPS, this installs prerequisites, clones into `/opt/rapidroads-production`, prepares `.env.production`, then deploys:
+- `sudo bash scripts/vps-deploy-fresh.sh 5.249.164.40`
+
 ## Updating on the server (automatic)
 If `git pull` fails due to local server edits, use:
 - `sudo bash scripts/update-and-deploy.sh`
