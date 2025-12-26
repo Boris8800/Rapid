@@ -56,6 +56,7 @@ export default function AdminRoot() {
   }, []);
 
   const canLogin = useMemo(() => email.trim() && password.length >= 8, [email, password]);
+  const canMagic = useMemo(() => email.trim().length > 0, [email]);
 
   async function refreshAll(currentToken: string) {
     const [meRes, driversRes, bookingsRes] = await Promise.all([
@@ -90,6 +91,19 @@ export default function AdminRoot() {
       setSession(tokens);
       await refreshAll(tokens.accessToken);
       setStatus('Signed in.');
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function requestMagicLink() {
+    setStatus(null);
+    try {
+      const res = await apiPost<{ ok: boolean; message: string; link?: string }>(
+        '/v1/auth/magic-link',
+        { email, tenant },
+      );
+      setStatus(res.link ? `${res.message} Link: ${res.link}` : res.message);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     }
@@ -185,6 +199,9 @@ export default function AdminRoot() {
           </div>
           <button className="border rounded px-3 py-2 w-fit" onClick={login} disabled={!canLogin}>
             Login
+          </button>
+          <button className="border rounded px-3 py-2 w-fit" onClick={requestMagicLink} disabled={!canMagic}>
+            Send magic link
           </button>
         </section>
       ) : (

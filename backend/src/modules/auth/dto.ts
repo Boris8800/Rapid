@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class RegisterDto {
   @IsEmail()
@@ -23,8 +23,18 @@ export class MagicLinkRequestDto {
   email!: string;
 
   @IsOptional()
+  @IsIn(['customer', 'driver', 'admin'])
+  tenant?: 'customer' | 'driver' | 'admin';
+
+  @IsOptional()
   @IsString()
   redirectUrl?: string;
+}
+
+export class MagicLinkConsumeDto {
+  @IsString()
+  @MinLength(16)
+  token!: string;
 }
 
 export class RefreshDto {

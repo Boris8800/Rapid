@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
-import { LoginDto, MagicLinkRequestDto, RefreshDto, RegisterDto } from './dto';
+import { LoginDto, MagicLinkConsumeDto, MagicLinkRequestDto, RefreshDto, RegisterDto } from './dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @ApiTags('auth')
@@ -22,6 +22,11 @@ export class AuthController {
   @Post('magic-link')
   async requestMagicLink(@Body() dto: MagicLinkRequestDto) {
     return this.auth.requestMagicLink(dto);
+  }
+
+  @Post('magic-link/consume')
+  async consumeMagicLink(@Body() dto: MagicLinkConsumeDto) {
+    return this.auth.consumeMagicLink(dto);
   }
 
   @Post('refresh')

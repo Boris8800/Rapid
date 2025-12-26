@@ -41,6 +41,7 @@ export default function CustomerRoot() {
   }, []);
 
   const canAuth = useMemo(() => email.trim() && password.length >= 8, [email, password]);
+  const canMagic = useMemo(() => email.trim().length > 0, [email]);
 
   async function refreshMeAndBookings(currentToken: string) {
     const [meRes, bookingsRes] = await Promise.all([
@@ -72,6 +73,19 @@ export default function CustomerRoot() {
       setSession(tokens);
       await refreshMeAndBookings(tokens.accessToken);
       setStatus('Signed in.');
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function requestMagicLink() {
+    setStatus(null);
+    try {
+      const res = await apiPost<{ ok: boolean; message: string; link?: string }>(
+        '/v1/auth/magic-link',
+        { email, tenant },
+      );
+      setStatus(res.link ? `${res.message} Link: ${res.link}` : res.message);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     }
@@ -163,6 +177,13 @@ export default function CustomerRoot() {
               disabled={!canAuth}
             >
               Login
+            </button>
+            <button
+              className="border rounded px-3 py-2"
+              onClick={requestMagicLink}
+              disabled={!canMagic}
+            >
+              Magic link
             </button>
           </div>
         </section>

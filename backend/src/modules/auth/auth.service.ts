@@ -3,13 +3,13 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { Role } from '../../shared/enums/roles.enum';
 import { UserStatus } from '../../shared/enums/user-status.enum';
 import { UserEntity } from '../../database/entities/user.entity';
 import { REDIS_CLIENT, type RedisLike } from '../../shared/redis/redis.constants';
 import { parseExpiresInToSeconds } from '../../utils/duration';
-import { LoginDto, MagicLinkRequestDto, RefreshDto, RegisterDto } from './dto';
+import { LoginDto, MagicLinkConsumeDto, MagicLinkRequestDto, RefreshDto, RegisterDto } from './dto';
 
 type PublicUser = {
   id: string;
@@ -73,12 +73,54 @@ export class AuthService {
   }
 
   async requestMagicLink(dto: MagicLinkRequestDto) {
-    // TODO: create one-time token, enqueue email job (BullMQ), store token in Redis
-    void dto;
-    return {
+    const email = dto.email.trim().toLowerCase();
+    const tenant = dto.tenant ?? 'customer';
+
+    // Do not leak whether the user exists.
+    const genericResponse: { ok: true; message: string; link?: string } = {
       ok: true,
       message: 'If the email exists, a sign-in link will be sent.',
     };
+
+    const user = await this.users.findOne({ where: { email } });
+    if (!user || user.status !== UserStatus.Active) return genericResponse;
+
+    const token = randomBytes(32).toString('hex');
+    const ttlSeconds = parseExpiresInToSeconds(process.env.MAGIC_LINK_TTL ?? '15m', 15 * 60);
+    await this.redis.set(this.magicKey(token), user.id, 'EX', ttlSeconds);
+
+    // Build a safe default link (no open redirect).
+    const domainRoot = (process.env.DOMAIN_ROOT ?? process.env.DOMAIN ?? 'rapidroad.uk').trim();
+    const hostPrefix = tenant === 'admin' ? 'admin.' : tenant === 'driver' ? 'driver.' : '';
+    const link = `https://${hostPrefix}${domainRoot}/magic?token=${encodeURIComponent(token)}`;
+
+    // For local/testing, optionally include the link in the response.
+    if (process.env.MAGIC_LINK_RETURN_URL === 'true' || process.env.NODE_ENV !== 'production') {
+      genericResponse.link = link;
+    }
+
+    // TODO: enqueue email sending (BullMQ) with the link.
+    return genericResponse;
+  }
+
+  async consumeMagicLink(dto: MagicLinkConsumeDto) {
+    const token = dto.token.trim();
+    const key = this.magicKey(token);
+
+    const userId = await this.redis.get(key);
+    if (!userId) throw new UnauthorizedException('Invalid or expired magic link');
+
+    // One-time token: delete first to prevent replay.
+    await this.redis.del(key);
+
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('Invalid or expired magic link');
+    if (user.status !== UserStatus.Active) throw new UnauthorizedException('User is not active');
+
+    user.lastLoginAt = new Date();
+    await this.users.save(user);
+
+    return this.issueTokens({ id: user.id, email: user.email ?? '', role: user.role });
   }
 
   async refresh(dto: RefreshDto) {
@@ -138,5 +180,9 @@ export class AuthService {
 
   private refreshKey(userId: string, jti: string) {
     return `refresh:${userId}:${jti}`;
+  }
+
+  private magicKey(token: string) {
+    return `magic:${token}`;
   }
 }
