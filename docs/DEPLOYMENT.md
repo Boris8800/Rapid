@@ -34,6 +34,13 @@ If you want to discard local changes instead:
 Optional:
 - Start monitoring too: `sudo START_MONITORING=true bash scripts/deploy-rapidroads.sh`
 
+## VPS management helper
+For quick status/logs/health/restart on the VPS:
+- `sudo bash scripts/vps-manage.sh status`
+- `sudo bash scripts/vps-manage.sh health`
+- `sudo bash scripts/vps-manage.sh logs backend-api`
+- `sudo bash scripts/vps-manage.sh restart`
+
 ## TLS
 TLS is bootstrapped by `scripts/setup-ssl.sh` using Let’s Encrypt **webroot** validation.
 It requests individual certs for each hostname and reloads Nginx.
