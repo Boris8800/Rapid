@@ -8,6 +8,8 @@ set -euo pipefail
 DOMAIN="${DOMAIN:-rapidroad.uk}"
 EMAIL="${LETSENCRYPT_EMAIL:-admin@rapidroad.uk}"
 START_MONITORING="${START_MONITORING:-false}"
+AUTO_GENERATE_SECRETS="${AUTO_GENERATE_SECRETS:-false}"
+SKIP_LETSENCRYPT="${SKIP_LETSENCRYPT:-false}"
 
 print() { printf '%s\n' "$*"; }
 
@@ -20,7 +22,41 @@ require_root() {
 
 install_base_packages() {
   apt-get update
-  apt-get install -y ca-certificates curl gnupg lsb-release ufw fail2ban unattended-upgrades
+  apt-get install -y ca-certificates curl gnupg lsb-release ufw fail2ban unattended-upgrades openssl
+}
+
+ensure_env_kv() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+
+  if grep -qE "^${key}=" "${file}"; then
+    # Escape sed replacement string
+    local escaped
+    escaped="$(printf '%s' "${value}" | sed 's/[\\&]/\\\\&/g')"
+    sed -i "s|^${key}=.*$|${key}=${escaped}|" "${file}"
+  else
+    printf '\n%s=%s\n' "${key}" "${value}" >>"${file}"
+  fi
+}
+
+autofill_env_secrets_if_requested() {
+  local file="$1"
+
+  if [ "${AUTO_GENERATE_SECRETS}" != "true" ]; then
+    return
+  fi
+
+  if ! grep -Eq 'ChangeMe_|secure_password_here|your_jwt_secret_here|your_refresh_secret_here' "${file}"; then
+    return
+  fi
+
+  print "[deploy] AUTO_GENERATE_SECRETS=true: generating secrets in .env.production"
+
+  # Use hex to avoid special chars that could break .env parsing.
+  ensure_env_kv "${file}" "POSTGRES_PASSWORD" "$(openssl rand -hex 32)"
+  ensure_env_kv "${file}" "JWT_SECRET" "$(openssl rand -hex 64)"
+  ensure_env_kv "${file}" "JWT_REFRESH_SECRET" "$(openssl rand -hex 64)"
 }
 
 install_docker() {
@@ -72,8 +108,11 @@ install_docker_compose() {
 ensure_env_file() {
   if [ -f ./.env.production ]; then
     # Basic safety check for placeholder secrets
+    autofill_env_secrets_if_requested ./.env.production
+
     if grep -Eq 'ChangeMe_|secure_password_here|your_jwt_secret_here|your_refresh_secret_here' ./.env.production; then
-      print "[deploy] .env.production still contains placeholder values. Update secrets and re-run." >&2
+      print "[deploy] .env.production still contains placeholder values." >&2
+      print "[deploy] Fix them and re-run, or set AUTO_GENERATE_SECRETS=true to auto-fill." >&2
       exit 1
     fi
     return
@@ -87,6 +126,7 @@ ensure_env_file() {
   cp ./.env.production.example ./.env.production
   print "[deploy] Created .env.production from .env.production.example"
   print "[deploy] IMPORTANT: Edit .env.production and set real secrets before re-running deploy."
+  print "[deploy] Or re-run with AUTO_GENERATE_SECRETS=true to auto-fill secrets."
   exit 1
 }
 
@@ -194,6 +234,8 @@ main() {
   print "== Rapid Roads Production Deploy =="
   print "Domain: ${DOMAIN}"
   print "Email:  ${EMAIL}"
+  print "Auto-generate secrets: ${AUTO_GENERATE_SECRETS}"
+  print "Skip Let's Encrypt:     ${SKIP_LETSENCRYPT}"
 
   install_base_packages
   install_docker
@@ -214,11 +256,21 @@ main() {
 
   ensure_env_file
 
+    # Docker Compose variable interpolation reads from the shell environment (and optional .env).
+    # Our canonical file is .env.production, so export its values for this script run.
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.production
+    set +a
+
   # Run the stack (DB/Redis first)
   docker compose -f docker-compose.production.yml up -d postgres redis
 
   # Bootstrap SSL
   export LETSENCRYPT_EMAIL="${EMAIL}"
+  if [ "${SKIP_LETSENCRYPT}" = "true" ]; then
+    export SKIP_LETSENCRYPT="true"
+  fi
   bash scripts/setup-ssl.sh
 
   # Start remaining services

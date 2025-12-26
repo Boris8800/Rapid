@@ -9,18 +9,28 @@ set -euo pipefail
 DOMAIN_ROOT="${DOMAIN_ROOT:-rapidroad.uk}"
 EMAIL="${LETSENCRYPT_EMAIL:-admin@rapidroad.uk}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.production.yml}"
+SKIP_LETSENCRYPT="${SKIP_LETSENCRYPT:-false}"
 
 DOMAINS=(
-  "rapidroad.uk"
-  "www.rapidroad.uk"
-  "api.rapidroad.uk"
-  "driver.rapidroad.uk"
-  "admin.rapidroad.uk"
+  "${DOMAIN_ROOT}"
+  "www.${DOMAIN_ROOT}"
+  "api.${DOMAIN_ROOT}"
+  "driver.${DOMAIN_ROOT}"
+  "admin.${DOMAIN_ROOT}"
 )
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required" >&2
   exit 1
+fi
+
+# Compose variable interpolation reads from the shell environment (and optional .env).
+# If we're running on the VPS, prefer the repo's .env.production.
+if [ -f ./.env.production ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env.production
+  set +a
 fi
 
 if ! docker compose version >/dev/null 2>&1; then
@@ -90,6 +100,11 @@ echo "[SSL] Creating dhparams in LetsEncrypt volume"
 LE_VOLUME="rapidroads_letsencrypt"
 WWW_VOLUME="rapidroads_certbot_www"
 
+# If only postgres/redis were started, these volumes may not exist yet.
+# Create them explicitly so we can write dhparams and dummy certs.
+docker volume inspect "${LE_VOLUME}" >/dev/null 2>&1 || docker volume create "${LE_VOLUME}" >/dev/null
+docker volume inspect "${WWW_VOLUME}" >/dev/null 2>&1 || docker volume create "${WWW_VOLUME}" >/dev/null
+
 if ! docker volume inspect "${LE_VOLUME}" >/dev/null 2>&1 || ! docker volume inspect "${WWW_VOLUME}" >/dev/null 2>&1; then
   echo "Expected volumes not found (${LE_VOLUME}, ${WWW_VOLUME}). Run: docker compose -f ${COMPOSE_FILE} up -d" >&2
   exit 1
@@ -102,6 +117,12 @@ create_dummy_certs "${LE_VOLUME}"
 
 echo "[SSL] Starting Nginx for ACME challenge"
 docker compose -f "${COMPOSE_FILE}" up -d nginx-proxy
+
+if [ "${SKIP_LETSENCRYPT}" = "true" ]; then
+  echo "[SSL] SKIP_LETSENCRYPT=true: leaving dummy certificates in place."
+  echo "[SSL] Re-run without SKIP_LETSENCRYPT to request real certificates once DNS is ready."
+  exit 0
+fi
 
 echo "[SSL] Requesting Let's Encrypt certificates"
 # Request certs individually to match per-hostname live paths used by nginx configs.

@@ -17,6 +17,12 @@ Recommended: `/opt/rapidroads-production`
 3. Run:
    - `sudo bash scripts/deploy-rapidroads.sh`
 
+### Helpful flags
+- Auto-generate required secrets (replaces placeholder values in `.env.production`):
+   - `sudo AUTO_GENERATE_SECRETS=true bash scripts/deploy-rapidroads.sh`
+- Start with self-signed (dummy) certs and skip Let's Encrypt issuance (useful before DNS points to the VPS):
+   - `sudo SKIP_LETSENCRYPT=true bash scripts/deploy-rapidroads.sh`
+
 Optional:
 - Start monitoring too: `sudo START_MONITORING=true bash scripts/deploy-rapidroads.sh`
 
