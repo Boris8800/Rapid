@@ -17,6 +17,14 @@ Recommended: `/opt/rapidroads-production`
 3. Run:
    - `sudo bash scripts/deploy-rapidroads.sh`
 
+## Updating on the server (automatic)
+If `git pull` fails due to local server edits, use:
+- `sudo bash scripts/update-and-deploy.sh`
+
+By default it stashes local changes, syncs to `origin/main`, then runs the deploy.
+If you want to discard local changes instead:
+- `sudo FORCE_RESET=true bash scripts/update-and-deploy.sh`
+
 ### Helpful flags
 - Auto-generate required secrets (replaces placeholder values in `.env.production`):
    - `sudo AUTO_GENERATE_SECRETS=true bash scripts/deploy-rapidroads.sh`
