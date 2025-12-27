@@ -135,6 +135,14 @@ repo_root() {
   cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P
 }
 
+record_last_deploy_commit() {
+  # Best-effort: used for rollback from scripts/rapidroads.sh
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return
+  fi
+  git rev-parse HEAD > .rapidroads_last_deploy_commit 2>/dev/null || true
+}
+
 ensure_on_main() {
   if git show-ref --verify --quiet refs/heads/main; then
     git checkout -q main
@@ -189,6 +197,8 @@ main() {
     print "Not a git repository: ${root}" >&2
     exit 1
   fi
+
+  record_last_deploy_commit
 
   print "[update] Syncing to origin/main"
   sync_to_origin_main

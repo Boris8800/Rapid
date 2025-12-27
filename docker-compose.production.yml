@@ -172,6 +172,24 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  ops-dashboard:
+    build:
+      context: ./ops-dashboard
+      dockerfile: Dockerfile
+    container_name: ops-dashboard
+    restart: unless-stopped
+    env_file:
+      - ./.env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=8090
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - letsencrypt:/etc/letsencrypt:ro
+    networks:
+      - internal
+
   # Optional admin tools (do not expose publicly; use SSH tunnel)
   pgadmin:
     image: dpage/pgadmin4:latest

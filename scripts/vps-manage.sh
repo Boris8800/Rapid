@@ -67,6 +67,11 @@ load_env_if_present() {
 prod() { docker compose -f "${COMPOSE_PROD_FILE}" "$@"; }
 mon() { docker compose -f "${COMPOSE_MON_FILE}" "$@"; }
 
+list_prod_services() {
+  # Prefer config --services (stable), fall back to ps --services.
+  prod config --services 2>/dev/null || prod ps --services 2>/dev/null || true
+}
+
 cmd_status() {
   print "== production stack =="
   prod ps
@@ -204,6 +209,9 @@ cmd_troubleshoot() {
   print "== ports (80/443) =="
   if command -v ss >/dev/null 2>&1; then
     ss -ltnp | awk 'NR==1 || $4 ~ /:80$|:443$/' || true
+    print
+    print "If ports 80/443 are used by another service (apache/nginx), stop it:"
+    print "- sudo systemctl stop apache2 || sudo systemctl stop nginx"
   else
     print "ss not found (install iproute2)"
   fi
@@ -257,9 +265,29 @@ cmd_menu() {
       "Stop") cmd_stop ;;
       "Restart") cmd_restart ;;
       "Logs (choose service)")
-        print "Enter service name (example: nginx-proxy, backend-api, frontend-web, postgres):"
-        read -r service
-        cmd_logs "${service}"
+        print "Available services:"
+        local i=0
+        local services
+        services="$(list_prod_services)"
+        if [ -z "${services}" ]; then
+          print "Could not list services. Enter service name manually (example: nginx-proxy):"
+          read -r service
+          cmd_logs "${service}"
+        else
+          while IFS= read -r line; do
+            [ -z "${line}" ] && continue
+            i=$((i + 1))
+            printf '  %s) %s\n' "${i}" "${line}"
+          done <<< "${services}"
+          print "Choose a number:"
+          read -r pick
+          service="$(printf '%s\n' "${services}" | sed -n "${pick}p")"
+          if [ -z "${service}" ]; then
+            print "Invalid selection"
+          else
+            cmd_logs "${service}"
+          fi
+        fi
         ;;
       "Troubleshoot") cmd_troubleshoot ;;
       "Backup") cmd_backup ;;

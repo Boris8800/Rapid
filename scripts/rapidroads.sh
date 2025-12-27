@@ -29,6 +29,21 @@ require_cmd() {
   command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
 }
 
+confirm_by_typing() {
+  local expected="$1"
+  local message="$2"
+
+  if ! is_interactive; then
+    return 1
+  fi
+
+  print "${message}" >&2
+  print "Type '${expected}' to continue:" >&2
+  local value
+  read -r value || true
+  [ "${value}" = "${expected}" ]
+}
+
 is_interactive() {
   [ -t 0 ] && [ -t 1 ]
 }
@@ -155,6 +170,26 @@ mask_value() {
   printf '%s' "****${v: -4}"
 }
 
+env_has_value() {
+  local file="$1"
+  local key="$2"
+  if [ ! -f "${file}" ]; then
+    return 1
+  fi
+  local v
+  v="$(grep -E "^${key}=" "${file}" | tail -n 1 | cut -d= -f2- || true)"
+  [ -n "${v}" ]
+}
+
+get_env_value() {
+  local file="$1"
+  local key="$2"
+  if [ ! -f "${file}" ]; then
+    return 0
+  fi
+  grep -E "^${key}=" "${file}" | tail -n 1 | cut -d= -f2- || true
+}
+
 print_service_links() {
   load_env_if_present
   local domain_root
@@ -207,6 +242,213 @@ cmd_preflight_checks() {
   else
     print "- skipped (docker/compose not installed yet)"
   fi
+}
+
+get_domain_root() {
+  load_env_if_present
+  printf '%s' "${DOMAIN_ROOT:-${DOMAIN:-rapidroad.uk}}"
+}
+
+ssl_expiry_report() {
+  local domain_root
+  domain_root="$(get_domain_root)"
+
+  if ! command -v docker >/dev/null 2>&1; then
+    print "SSL expiry: docker not available"
+    return 0
+  fi
+  if ! docker volume inspect rapidroads_letsencrypt >/dev/null 2>&1; then
+    print "SSL expiry: letsencrypt volume not found (run deploy once)"
+    return 0
+  fi
+
+  print "SSL expiry (from letsencrypt volume)"
+  local domains=("${domain_root}" "www.${domain_root}" "api.${domain_root}" "driver.${domain_root}" "admin.${domain_root}")
+  local d
+  for d in "${domains[@]}"; do
+    docker run --rm -v rapidroads_letsencrypt:/etc/letsencrypt:ro alpine:3.20 sh -lc "apk add --no-cache openssl >/dev/null 2>&1; f=/etc/letsencrypt/live/${d}/fullchain.pem; if [ -f \"$f\" ]; then echo -n '${d}: '; openssl x509 -in \"$f\" -noout -enddate | sed 's/notAfter=//'; else echo '${d}: <no cert>'; fi" || true
+  done
+}
+
+run_show_all_dashboard() {
+  print
+  print "Show all (dashboard)"
+  print
+  print_current_config
+  print
+  print_service_links
+  print
+
+  if [ -f ./.env.production ]; then
+    print "Integrations (set/unset)"
+    print "- GEMINI_API_KEY: $(env_has_value ./.env.production GEMINI_API_KEY && echo set || echo not-set)"
+    print "- STRIPE_SECRET_KEY: $(env_has_value ./.env.production STRIPE_SECRET_KEY && echo set || echo not-set)"
+    print "- TWILIO_AUTH_TOKEN: $(env_has_value ./.env.production TWILIO_AUTH_TOKEN && echo set || echo not-set)"
+    print "- SMTP_PASS: $(env_has_value ./.env.production SMTP_PASS && echo set || echo not-set)"
+    print
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    print "== docker compose ps (production) =="
+    docker compose -f docker-compose.production.yml ps || true
+    print
+  fi
+
+  print "== health checks =="
+  bash scripts/vps-manage.sh health || true
+  print
+
+  ssl_expiry_report
+  pause
+}
+
+run_ops_web_dashboard_menu() {
+  while true; do
+    print
+    print "Ops web dashboard"
+    print "- Local-only URL: http://127.0.0.1:8090/"
+    print "- API JSON:        http://127.0.0.1:8090/api/status"
+    print "- Remote access:   ssh -L 8090:127.0.0.1:8090 root@YOUR_SERVER_IP"
+    print
+
+    if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+      print "Docker/Compose not available yet. Run deploy first."
+      pause
+      return 0
+    fi
+
+    print "1) Start (build + run)"
+    print "2) Stop"
+    print "3) Restart"
+    print "4) Status"
+    print "5) Logs (follow)"
+    print "6) Quick check (curl)"
+    print "7) Back"
+    print
+
+    local choice
+    choice="$(prompt "Choose" "4")"
+
+    case "${choice}" in
+      1)
+        docker compose -f docker-compose.production.yml up -d --build ops-dashboard
+        print "Started: http://127.0.0.1:8090/"
+        pause
+        ;;
+      2)
+        docker compose -f docker-compose.production.yml stop ops-dashboard || true
+        pause
+        ;;
+      3)
+        docker compose -f docker-compose.production.yml restart ops-dashboard || true
+        pause
+        ;;
+      4)
+        docker compose -f docker-compose.production.yml ps ops-dashboard || true
+        pause
+        ;;
+      5)
+        print "Tip: press Ctrl+C to stop following logs."
+        docker compose -f docker-compose.production.yml logs --tail=200 -f ops-dashboard || true
+        ;;
+      6)
+        if command -v curl >/dev/null 2>&1; then
+          curl -fsS http://127.0.0.1:8090/api/status | head -n 60 || true
+        else
+          print "curl not installed"
+        fi
+        pause
+        ;;
+      7) break ;;
+      *) print "Invalid option" ;;
+    esac
+  done
+}
+
+run_domain_change_wizard() {
+  print
+  print "Domain change wizard"
+  print "- Updates .env.production domain URLs and CORS for your new domain."
+  print
+
+  local domain_root
+  domain_root="$(prompt "New domain root" "$(get_domain_root)")"
+
+  if [ ! -f ./.env.production ]; then
+    print ".env.production not found; creating from example."
+    cp ./.env.production.example ./.env.production
+  fi
+
+  ensure_env_kv ./.env.production DOMAIN_ROOT "${domain_root}"
+  ensure_env_kv ./.env.production NEXT_PUBLIC_API_URL "https://api.${domain_root}"
+  ensure_env_kv ./.env.production CORS_ORIGINS "https://${domain_root},https://driver.${domain_root},https://admin.${domain_root}"
+
+  print
+  print "Updated .env.production with:"
+  print "- DOMAIN_ROOT=${domain_root}"
+  print "- NEXT_PUBLIC_API_URL=https://api.${domain_root}"
+  print "- CORS_ORIGINS=https://${domain_root},https://driver.${domain_root},https://admin.${domain_root}"
+  print
+  print "DNS records you should create (A records to your VPS IP):"
+  print "- ${domain_root}"
+  print "- www.${domain_root}"
+  print "- api.${domain_root}"
+  print "- driver.${domain_root}"
+  print "- admin.${domain_root}"
+  print
+
+  if prompt_yes_no "Run deploy now with the new domain settings?" false; then
+    run_deploy_guided
+  fi
+}
+
+run_dry_run_deploy() {
+  print
+  print "Dry-run (no changes)"
+  print "- Shows what deploy would do and checks config."
+  print
+  cmd_preflight_checks
+  print
+  print "Would run: scripts/deploy-rapidroads.sh"
+  print "- If DNS not ready: use SKIP_LETSENCRYPT=true"
+  print "- If secrets missing: deploy will offer AUTO_GENERATE_SECRETS"
+  pause
+}
+
+run_rollback_menu() {
+  print
+  print "Rollback"
+  print "- Resets the repo to the previous recorded deploy commit and re-deploys."
+  print
+
+  local file=".rapidroads_last_deploy_commit"
+  if [ ! -f "${file}" ]; then
+    print "No rollback commit recorded yet (${file} not found)."
+    print "Run 'Update from GitHub + redeploy' at least once to create it."
+    pause
+    return
+  fi
+
+  local commit
+  commit="$(cat "${file}" | tr -d ' \n\r\t')"
+  if [ -z "${commit}" ]; then
+    print "Rollback commit file is empty."
+    pause
+    return
+  fi
+
+  print "Will rollback to commit: ${commit}"
+  if ! confirm_by_typing "ROLLBACK" "This will reset code and restart services."; then
+    print "Cancelled."
+    pause
+    return
+  fi
+
+  require_cmd git
+  git reset --hard "${commit}"
+  bash scripts/deploy-rapidroads.sh
+  bash scripts/vps-manage.sh health || true
+  pause
 }
 
 ensure_env_kv() {
@@ -571,7 +813,8 @@ run_database_menu() {
         pause
         ;;
       2)
-        if prompt_yes_no "Restore will overwrite your database. Continue?" false; then
+        print "Restore will OVERWRITE your database." >&2
+        if confirm_by_typing "RESTORE" "Danger: continue with database restore?"; then
           bash scripts/restore-database.sh
         else
           print "Cancelled."
@@ -763,7 +1006,12 @@ run_menu() {
     print "10) Preflight checks"
     print "11) Integrations (API keys)"
     print "12) Help"
-    print "13) Quit"
+    print "13) Domain change wizard"
+    print "14) Show all (dashboard)"
+    print "15) Ops web dashboard"
+    print "16) Dry-run deploy"
+    print "17) Rollback"
+    print "18) Quit"
     print
 
     local choice
@@ -783,7 +1031,12 @@ run_menu() {
       10) cmd_preflight_checks; pause ;;
       11) run_integrations_menu ;;
       12) run_help_menu ;;
-      13) break ;;
+      13) run_domain_change_wizard ;;
+      14) run_show_all_dashboard ;;
+      15) run_ops_web_dashboard_menu ;;
+      16) run_dry_run_deploy ;;
+      17) run_rollback_menu ;;
+      18) break ;;
       *) print "Invalid option" ;;
     esac
   done
