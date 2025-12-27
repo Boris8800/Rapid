@@ -24,6 +24,11 @@ require_repo_root() {
   fi
 }
 
+require_cmd() {
+  local cmd="$1"
+  command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
+}
+
 is_interactive() {
   [ -t 0 ] && [ -t 1 ]
 }
@@ -135,6 +140,75 @@ load_env_if_present() {
   fi
 }
 
+mask_value() {
+  local v="${1:-}"
+  if [ -z "${v}" ]; then
+    printf '%s' "<not set>"
+    return 0
+  fi
+  # Avoid leaking full secrets on-screen.
+  local n=${#v}
+  if [ "${n}" -le 8 ]; then
+    printf '%s' "<set>"
+    return 0
+  fi
+  printf '%s' "****${v: -4}"
+}
+
+print_service_links() {
+  load_env_if_present
+  local domain_root
+  domain_root="${DOMAIN_ROOT:-${DOMAIN:-rapidroad.uk}}"
+
+  print "Web / service links"
+  print "- Customer: https://${domain_root}"
+  print "- Driver:   https://driver.${domain_root}"
+  print "- Admin:    https://admin.${domain_root}"
+  print "- API:      https://api.${domain_root}"
+  print
+  print "On-server status"
+  print "- Menu: sudo bash scripts/rapidroads.sh"
+  print "- Status: sudo bash scripts/vps-manage.sh status"
+  print "- Health: sudo bash scripts/vps-manage.sh health"
+}
+
+cmd_preflight_checks() {
+  print "Preflight checks"
+  print "- These checks help avoid deploy failures."
+  print
+
+  require_cmd git
+
+  if ! command -v docker >/dev/null 2>&1; then
+    print "- Docker: NOT installed yet (deploy will install it)"
+  else
+    print "- Docker: OK ($(docker --version 2>/dev/null || true))"
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    print "- Docker Compose: OK"
+  else
+    print "- Docker Compose: NOT installed yet (deploy will install it)"
+  fi
+
+  if [ -f ./.env.production ]; then
+    print "- .env.production: present"
+  else
+    print "- .env.production: missing (wizard/deploy will create it)"
+  fi
+
+  print
+  print "Compose config (syntax)"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    docker compose -f docker-compose.production.yml config -q && print "- production: OK" || print "- production: ERROR"
+    if [ -f docker-compose.monitoring.yml ]; then
+      docker compose -f docker-compose.monitoring.yml config -q && print "- monitoring: OK" || print "- monitoring: ERROR"
+    fi
+  else
+    print "- skipped (docker/compose not installed yet)"
+  fi
+}
+
 ensure_env_kv() {
   local file="$1"
   local key="$2"
@@ -168,6 +242,124 @@ print_current_config() {
   else
     print "- .env.production: MISSING"
   fi
+}
+
+run_integrations_menu() {
+  while true; do
+    print
+    print "Integrations (API keys)"
+    print "- Add/change API keys without editing files manually."
+    print "- Values are masked on screen."
+    print
+
+    if [ ! -f ./.env.production ]; then
+      print ".env.production not found. Creating from example."
+      cp ./.env.production.example ./.env.production
+    fi
+
+    load_env_if_present
+
+    print "Current values (masked):"
+    print "1) Gemini (AI concierge):        $(mask_value "${GEMINI_API_KEY:-}")"
+    print "2) Stripe (payments):            $(mask_value "${STRIPE_SECRET_KEY:-}")"
+    print "3) Stripe webhook secret:        $(mask_value "${STRIPE_WEBHOOK_SECRET:-}")"
+    print "4) Twilio (SMS) Account SID:     $(mask_value "${TWILIO_ACCOUNT_SID:-}")"
+    print "5) Twilio (SMS) Auth Token:      $(mask_value "${TWILIO_AUTH_TOKEN:-}")"
+    print "6) Twilio (SMS) From number:     ${TWILIO_FROM:-<not set>}"
+    print "7) SMTP host:                    ${SMTP_HOST:-<not set>}"
+    print "8) SMTP user:                    ${SMTP_USER:-<not set>}"
+    print "9) SMTP pass:                    $(mask_value "${SMTP_PASS:-}")"
+    print "10) Google Maps API key (opt):   $(mask_value "${GOOGLE_MAPS_API_KEY:-}")"
+    print
+    print "11) Open full .env.production"
+    print "12) Back"
+    print
+
+    local choice
+    choice="$(prompt "Choose" "1")"
+
+    case "${choice}" in
+      1)
+        local v
+        v="$(prompt "Enter GEMINI_API_KEY (blank to clear)" "")"
+        ensure_env_kv ./.env.production GEMINI_API_KEY "${v}"
+        ;;
+      2)
+        local v
+        v="$(prompt "Enter STRIPE_SECRET_KEY (blank to clear)" "")"
+        ensure_env_kv ./.env.production STRIPE_SECRET_KEY "${v}"
+        ;;
+      3)
+        local v
+        v="$(prompt "Enter STRIPE_WEBHOOK_SECRET (blank to clear)" "")"
+        ensure_env_kv ./.env.production STRIPE_WEBHOOK_SECRET "${v}"
+        ;;
+      4)
+        local v
+        v="$(prompt "Enter TWILIO_ACCOUNT_SID (blank to clear)" "")"
+        ensure_env_kv ./.env.production TWILIO_ACCOUNT_SID "${v}"
+        ;;
+      5)
+        local v
+        v="$(prompt "Enter TWILIO_AUTH_TOKEN (blank to clear)" "")"
+        ensure_env_kv ./.env.production TWILIO_AUTH_TOKEN "${v}"
+        ;;
+      6)
+        local v
+        v="$(prompt "Enter TWILIO_FROM (example: +15551234567)" "")"
+        ensure_env_kv ./.env.production TWILIO_FROM "${v}"
+        ;;
+      7)
+        local v
+        v="$(prompt "Enter SMTP_HOST" "")"
+        ensure_env_kv ./.env.production SMTP_HOST "${v}"
+        ;;
+      8)
+        local v
+        v="$(prompt "Enter SMTP_USER" "")"
+        ensure_env_kv ./.env.production SMTP_USER "${v}"
+        ;;
+      9)
+        local v
+        v="$(prompt "Enter SMTP_PASS (blank to clear)" "")"
+        ensure_env_kv ./.env.production SMTP_PASS "${v}"
+        ;;
+      10)
+        local v
+        v="$(prompt "Enter GOOGLE_MAPS_API_KEY (blank to clear)" "")"
+        ensure_env_kv ./.env.production GOOGLE_MAPS_API_KEY "${v}"
+        ;;
+      11)
+        if ! open_editor_if_possible ./.env.production; then
+          print "No editor found (nano/vim). Edit manually: $(pwd)/.env.production"
+        fi
+        ;;
+      12) break ;;
+      *) print "Invalid option" ;;
+    esac
+  done
+}
+
+run_help_menu() {
+  print
+  print "Help / quick guide"
+  print
+  print "Common tasks"
+  print "- First install: choose '0) First-time setup wizard'"
+  print "- Update code: choose '2) Update from GitHub + redeploy'"
+  print "- Start/stop: choose '3) App management'"
+  print "- Fix SSL: choose '4) SSL / HTTPS'"
+  print "- Add API keys: choose '11) Integrations (API keys)'"
+  print
+
+  print "Links (documentation)"
+  print "- Docker Compose: https://docs.docker.com/compose/"
+  print "- Let's Encrypt:  https://letsencrypt.org/getting-started/"
+  print "- UFW firewall:   https://help.ubuntu.com/community/UFW"
+  print
+
+  print_service_links
+  pause
 }
 
 run_deploy_guided() {
@@ -568,7 +760,10 @@ run_menu() {
     print "7) System / security (updates, firewall)"
     print "8) .env.production (view/edit)"
     print "9) Troubleshoot (guided checks)"
-    print "10) Quit"
+    print "10) Preflight checks"
+    print "11) Integrations (API keys)"
+    print "12) Help"
+    print "13) Quit"
     print
 
     local choice
@@ -585,7 +780,10 @@ run_menu() {
       7) run_system_menu ;;
       8) run_env_menu ;;
       9) bash scripts/vps-manage.sh troubleshoot; pause ;;
-      10) break ;;
+      10) cmd_preflight_checks; pause ;;
+      11) run_integrations_menu ;;
+      12) run_help_menu ;;
+      13) break ;;
       *) print "Invalid option" ;;
     esac
   done

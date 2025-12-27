@@ -13,6 +13,17 @@ SKIP_LETSENCRYPT="${SKIP_LETSENCRYPT:-false}"
 
 print() { printf '%s\n' "$*"; }
 
+# Simple, user-friendly progress display (step-based %).
+TOTAL_STEPS=14
+STEP=0
+
+step() {
+  STEP=$((STEP + 1))
+  # shellcheck disable=SC2004
+  local pct=$(( (STEP * 100) / TOTAL_STEPS ))
+  printf '[%3s%%] %s\n' "${pct}" "$*"
+}
+
 is_interactive() {
   [ -t 0 ] && [ -t 1 ]
 }
@@ -343,24 +354,44 @@ main() {
   print "Email:  ${EMAIL}"
   print "Auto-generate secrets: ${AUTO_GENERATE_SECRETS}"
   print "Skip Let's Encrypt:     ${SKIP_LETSENCRYPT}"
+  print
+  print "Tip: If deploy pauses for questions, answer Y/N."
+  print "Tip: If DNS is not ready, use SKIP_LETSENCRYPT=true."
+  print
 
+  step "Installing base packages (ufw, fail2ban, openssl, curl)"
   install_base_packages
+
+  step "Installing Docker (if needed)"
   install_docker
+
+  step "Installing Docker Compose plugin (if needed)"
   install_docker_compose
+
+  step "Configuring firewall (UFW: allow 22/80/443)"
   enable_firewall
+
+  step "Enabling automatic security updates"
   enable_auto_updates
+
+  step "Enabling system services (docker, fail2ban)"
   enable_services
+
+  step "Configuring fail2ban"
   configure_fail2ban
+
+  step "Hardening SSH (only if SSH keys exist)"
   harden_ssh
 
-  echo "[deploy] making scripts executable"
+  step "Making scripts executable"
   chmod +x scripts/*.sh || true
 
-  echo "[deploy] installing daily backup cron (template)"
+  step "Installing daily backup cron (template)"
   if [ -f backups/schedule/cron.d.rapidroads-backup.example ]; then
     install -m 0644 backups/schedule/cron.d.rapidroads-backup.example /etc/cron.d/rapidroads-backup
   fi
 
+  step "Preparing .env.production (secrets + domain config)"
   ensure_env_file
 
     # Docker Compose variable interpolation reads from the shell environment (and optional .env).
@@ -370,24 +401,26 @@ main() {
     . ./.env.production
     set +a
 
-  # Run the stack (DB/Redis first)
+  step "Starting database and redis"
   docker compose -f docker-compose.production.yml up -d postgres redis
 
-  # Bootstrap SSL
+  step "Setting up SSL (dummy certs or Let's Encrypt)"
   export LETSENCRYPT_EMAIL="${EMAIL}"
   if [ "${SKIP_LETSENCRYPT}" = "true" ]; then
     export SKIP_LETSENCRYPT="true"
   fi
   bash scripts/setup-ssl.sh
 
-  # Start remaining services
+  step "Starting application services"
   docker compose -f docker-compose.production.yml up -d
 
   if [ "${START_MONITORING}" = "true" ]; then
+    step "Starting monitoring stack"
     print "[deploy] Starting monitoring stack"
     docker compose -f docker-compose.monitoring.yml up -d
   fi
 
+  step "Done"
   print "Deployment complete. URLs:"
   local domain_root
   domain_root="${DOMAIN_ROOT:-${DOMAIN}}"
