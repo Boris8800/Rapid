@@ -12,8 +12,8 @@
     "test": "jest --config ./jest.config.js",
     "test:watch": "jest --config ./jest.config.js --watch",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "migration:run": "node dist/scripts/migrate.js",
-    "seed:run": "node dist/scripts/seed.js"
+    "migration:run": "echo 'Migrations run automatically on app startup'",
+    "seed:run": "echo 'Seeds are not currently automated on startup'"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.7",

@@ -3,7 +3,8 @@ import 'reflect-metadata';
 import cookieParser from 'cookie-parser';
 import csurf from 'csurf';
 import helmet from 'helmet';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
@@ -57,6 +58,18 @@ async function bootstrap() {
     .setVersion('1.0.0')
     .addBearerAuth()
     .build();
+
+  // Run migrations if TypeORM is enabled/present
+  try {
+    const dataSource = app.get(DataSource);
+    if (dataSource) {
+      await dataSource.runMigrations();
+      Logger.log('Migrations executed successfully', 'Bootstrap');
+    }
+  } catch (error) {
+    // If DataSource is not found (e.g. SKIP_DB=true) or migration fails
+    Logger.warn(`Skipping migrations: ${error instanceof Error ? error.message : error}`, 'Bootstrap');
+  }
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('docs', app, document, {
