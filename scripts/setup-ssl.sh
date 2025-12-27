@@ -57,35 +57,37 @@ ensure_volume_file() {
   local volume_name="$1"
   local file_path="$2"
 
-  docker run --rm -v "${volume_name}:/data" alpine:3.20 sh -c "
-    set -e;
-    mkdir -p \"$(dirname "/data/${file_path}")\";
-    if [ ! -f \"/data/${file_path}\" ]; then
-      echo 'Generating /data/${file_path}';
-      apk add --no-cache openssl >/dev/null;
-      openssl dhparam -out \"/data/${file_path}\" 2048 >/dev/null 2>&1;
+  docker run --rm -v "${volume_name}:/data" alpine:3.20 sh -eu -c '
+    file_path="$1"
+    mkdir -p "$(dirname "/data/${file_path}")"
+
+    if [ ! -f "/data/${file_path}" ]; then
+      echo "Generating /data/${file_path}"
+      apk add --no-cache openssl >/dev/null
+      openssl dhparam -out "/data/${file_path}" 2048 >/dev/null 2>&1
     fi
-  "
+  ' -- "${file_path}"
 }
 
 create_dummy_certs() {
   local volume_name="$1"
 
-  docker run --rm -v "${volume_name}:/etc/letsencrypt" alpine:3.20 sh -c "
-    set -e;
-    apk add --no-cache openssl >/dev/null;
-    for d in ${DOMAINS[*]}; do
-      live_dir=\"/etc/letsencrypt/live/${d}\";
-      if [ ! -f \"${live_dir}/fullchain.pem\" ] || [ ! -f \"${live_dir}/privkey.pem\" ]; then
-        echo \"Creating dummy cert for ${d}\";
-        mkdir -p \"${live_dir}\";
+  docker run --rm -v "${volume_name}:/etc/letsencrypt" alpine:3.20 sh -eu -c '
+    apk add --no-cache openssl >/dev/null
+
+    for d in "$@"; do
+      live_dir="/etc/letsencrypt/live/${d}"
+
+      if [ ! -f "${live_dir}/fullchain.pem" ] || [ ! -f "${live_dir}/privkey.pem" ]; then
+        echo "Creating dummy cert for ${d}"
+        mkdir -p "${live_dir}"
         openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
-          -keyout \"${live_dir}/privkey.pem\" \
-          -out \"${live_dir}/fullchain.pem\" \
-          -subj \"/CN=${d}\" >/dev/null 2>&1;
+          -keyout "${live_dir}/privkey.pem" \
+          -out "${live_dir}/fullchain.pem" \
+          -subj "/CN=${d}" >/dev/null 2>&1
       fi
     done
-  "
+  ' -- "${DOMAINS[@]}"
 }
 
 echo "[SSL] Preparing volumes"
