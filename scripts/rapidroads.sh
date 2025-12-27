@@ -135,6 +135,26 @@ load_env_if_present() {
   fi
 }
 
+ensure_env_kv() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+
+  if grep -qE "^${key}=" "${file}"; then
+    local escaped
+    escaped="$(printf '%s' "${value}" | sed 's/[\\&]/\\\\&/g')"
+    sed -i "s|^${key}=.*$|${key}=${escaped}|" "${file}"
+  else
+    printf '\n%s=%s\n' "${key}" "${value}" >>"${file}"
+  fi
+}
+
+detect_public_ip() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS https://api.ipify.org || true
+  fi
+}
+
 print_current_config() {
   load_env_if_present
   local domain_root
@@ -211,6 +231,91 @@ run_update_guided() {
   fi
 
   SKIP_LETSENCRYPT="${skip_le}" bash scripts/update-and-deploy.sh
+  print
+  print "Running quick health check..."
+  bash scripts/vps-manage.sh health || true
+  pause
+}
+
+run_first_time_wizard() {
+  print
+  print "First-time setup wizard (recommended)"
+  print "- Asks a few questions"
+  print "- Writes safe defaults into .env.production"
+  print "- Deploys and runs a health check"
+  print
+
+  local domain_root email
+  domain_root="$(prompt "Domain root (example: example.com)" "rapidroad.uk")"
+  email="$(prompt "Let's Encrypt email" "admin@${domain_root}")"
+
+  local dns_ready=false
+  if prompt_yes_no "Is DNS already pointing to this server (A records ready)?" false; then
+    dns_ready=true
+  fi
+
+  local start_monitoring=false
+  if prompt_yes_no "Enable monitoring (Grafana/Prometheus/Loki)?" false; then
+    start_monitoring=true
+  fi
+
+  local auto_secrets=true
+  if ! prompt_yes_no "Auto-generate secrets (recommended)?" true; then
+    auto_secrets=false
+  fi
+
+  local gemini_key
+  gemini_key="$(prompt "Gemini API key (optional, enables AI concierge)" "")"
+
+  if [ ! -f ./.env.production ]; then
+    print ".env.production not found; creating from example."
+    cp ./.env.production.example ./.env.production
+  fi
+
+  print
+  print "Writing domain settings into .env.production..."
+  ensure_env_kv ./.env.production DOMAIN_ROOT "${domain_root}"
+  ensure_env_kv ./.env.production NEXT_PUBLIC_API_URL "https://api.${domain_root}"
+  ensure_env_kv ./.env.production CORS_ORIGINS "https://${domain_root},https://driver.${domain_root},https://admin.${domain_root}"
+
+  local detected_ip
+  detected_ip="$(detect_public_ip)"
+  if [ -n "${detected_ip}" ]; then
+    if prompt_yes_no "Set VPS_IP=${detected_ip} in .env.production (helps DNS checks)?" true; then
+      ensure_env_kv ./.env.production VPS_IP "${detected_ip}"
+    fi
+  fi
+
+  if [ -n "${gemini_key}" ]; then
+    ensure_env_kv ./.env.production GEMINI_API_KEY "${gemini_key}"
+  fi
+
+  print
+  if prompt_yes_no "Open .env.production to review/edit now?" false; then
+    if ! open_editor_if_possible ./.env.production; then
+      print "No editor found (nano/vim). Edit manually: $(pwd)/.env.production"
+    fi
+  fi
+
+  local skip_le=false
+  if [ "${dns_ready}" != "true" ]; then
+    skip_le=true
+  fi
+
+  print
+  print "Deploying now..."
+  DOMAIN="${domain_root}" \
+  DOMAIN_ROOT="${domain_root}" \
+  LETSENCRYPT_EMAIL="${email}" \
+  SKIP_LETSENCRYPT="${skip_le}" \
+  START_MONITORING="${start_monitoring}" \
+  AUTO_GENERATE_SECRETS="${auto_secrets}" \
+    bash scripts/deploy-rapidroads.sh
+
+  print
+  print "Health check..."
+  bash scripts/vps-manage.sh health || true
+  pause
 }
 
 run_ssl_menu() {
@@ -453,6 +558,7 @@ run_menu() {
     print "Rapid Roads - Main Menu"
     print_current_config
     print
+    print "0) First-time setup wizard (recommended)"
     print "1) First-time deploy (guided)"
     print "2) Update from GitHub + redeploy"
     print "3) App management (start/stop/status/logs/health)"
@@ -469,6 +575,7 @@ run_menu() {
     choice="$(prompt "Choose" "1")"
 
     case "${choice}" in
+      0) run_first_time_wizard ;;
       1) run_deploy_guided ;;
       2) run_update_guided ;;
       3) run_manage_menu ;;
