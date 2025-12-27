@@ -29,6 +29,65 @@ require_cmd() {
   command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
 }
 
+ensure_linux_user() {
+  local username="$1"
+
+  if [ -z "${username}" ]; then
+    die "Username is required"
+  fi
+  if [ "${username}" = "root" ]; then
+    die "Refusing to manage root user"
+  fi
+  if id -u "${username}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  print "Creating user: ${username}"
+  if command -v adduser >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" "${username}"
+  else
+    useradd -m -s /bin/bash "${username}"
+  fi
+
+  if getent group sudo >/dev/null 2>&1; then
+    usermod -aG sudo "${username}" || true
+  fi
+}
+
+danger_delete_and_recreate_user() {
+  local username="$1"
+
+  if [ -z "${username}" ]; then
+    die "Username is required"
+  fi
+  if [ "${username}" = "root" ]; then
+    die "Refusing to delete root user"
+  fi
+  if ! id -u "${username}" >/dev/null 2>&1; then
+    # Nothing to delete.
+    ensure_linux_user "${username}"
+    return 0
+  fi
+
+  print
+  print "DANGEROUS: delete + recreate user '${username}'"
+  print "- This removes /home/${username} and all files owned by that user."
+  print "- Do this only if you are 100% sure."
+
+  if ! confirm_by_typing "DELETE ${username}" "Type the confirmation to delete the user"; then
+    print "Cancelled. Keeping existing user '${username}'."
+    return 0
+  fi
+
+  print "Stopping processes for ${username} (best effort)"
+  pkill -u "${username}" >/dev/null 2>&1 || true
+
+  print "Deleting user ${username}"
+  userdel -r "${username}" >/dev/null 2>&1 || userdel "${username}" || true
+
+  ensure_linux_user "${username}"
+}
+
 confirm_by_typing() {
   local expected="$1"
   local message="$2"
@@ -648,6 +707,17 @@ run_deploy_guided() {
     bash scripts/deploy-rapidroads.sh
 }
 
+run_deploy_ip_mode() {
+  print
+  print "IP-only deploy (no domain / no SSL)"
+  print "- Starts docker-compose.yml (ports 3000 + 4000)"
+  print "- Temporary mode until you buy a domain"
+  print
+
+  bash scripts/deploy-ip-mode.sh
+  pause
+}
+
 run_update_guided() {
   print
   print "Update from GitHub + redeploy"
@@ -678,6 +748,28 @@ run_first_time_wizard() {
   print "- Writes safe defaults into .env.production"
   print "- Deploys and runs a health check"
   print
+
+  local manage_user=false
+  if prompt_yes_no "Create/manage a dedicated server user (recommended)?" false; then
+    manage_user=true
+  fi
+
+  local deploy_user=""
+  local recreate_user=false
+  if [ "${manage_user}" = "true" ]; then
+    deploy_user="$(prompt "Deploy username" "taxi")"
+    if id -u "${deploy_user}" >/dev/null 2>&1; then
+      if prompt_yes_no "User '${deploy_user}' exists. Delete + recreate it? (DANGEROUS)" false; then
+        recreate_user=true
+      fi
+    fi
+
+    if [ "${recreate_user}" = "true" ]; then
+      danger_delete_and_recreate_user "${deploy_user}"
+    else
+      ensure_linux_user "${deploy_user}"
+    fi
+  fi
 
   local domain_root email
   domain_root="$(prompt "Domain root (example: example.com)" "rapidroad.uk")"
@@ -745,6 +837,16 @@ run_first_time_wizard() {
   START_MONITORING="${start_monitoring}" \
   AUTO_GENERATE_SECRETS="${auto_secrets}" \
     bash scripts/deploy-rapidroads.sh
+
+  if [ -n "${deploy_user}" ]; then
+    if getent group docker >/dev/null 2>&1; then
+      usermod -aG docker "${deploy_user}" || true
+    fi
+    print
+    print "User ready: ${deploy_user}"
+    print "- Next time you can login as '${deploy_user}' and run: sudo bash scripts/rapidroads.sh"
+    print "- Docker access may require re-login (new group membership)."
+  fi
 
   print
   print "Health check..."
@@ -995,6 +1097,7 @@ run_menu() {
     print
     print "0) First-time setup wizard (recommended)"
     print "1) First-time deploy (guided)"
+    print "1a) IP-only deploy (no domain/SSL)"
     print "2) Update from GitHub + redeploy"
     print "3) App management (start/stop/status/logs/health)"
     print "4) SSL / HTTPS (Let's Encrypt)"
@@ -1020,6 +1123,7 @@ run_menu() {
     case "${choice}" in
       0) run_first_time_wizard ;;
       1) run_deploy_guided ;;
+      1a) run_deploy_ip_mode ;;
       2) run_update_guided ;;
       3) run_manage_menu ;;
       4) run_ssl_menu ;;

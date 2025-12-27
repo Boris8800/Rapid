@@ -26,6 +26,8 @@ set -euo pipefail
 INSTALL_DIR="${INSTALL_DIR:-/opt/rapidroads-production}"
 REPO_URL="${REPO_URL:-https://github.com/Boris8800/Rapid.git}"
 BRANCH="${BRANCH:-main}"
+DEPLOY_USER="${DEPLOY_USER:-}"
+RECREATE_DEPLOY_USER="${RECREATE_DEPLOY_USER:-false}"
 
 print() { printf '%s\n' "$*"; }
 
@@ -43,6 +45,103 @@ require_root() {
 require_cmd() {
   local cmd="$1"
   command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
+}
+
+is_interactive() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
+prompt() {
+  local label="$1"
+  local default_value="${2:-}"
+
+  if ! is_interactive; then
+    printf '%s' "${default_value}"
+    return 0
+  fi
+
+  if [ -n "${default_value}" ]; then
+    printf '%s [%s]: ' "${label}" "${default_value}" >&2
+  else
+    printf '%s: ' "${label}" >&2
+  fi
+
+  local value
+  read -r value || true
+  value="${value:-}"
+
+  if [ -z "${value}" ]; then
+    printf '%s' "${default_value}"
+  else
+    printf '%s' "${value}"
+  fi
+}
+
+confirm_by_typing() {
+  local expected="$1"
+  local message="$2"
+
+  if ! is_interactive; then
+    return 1
+  fi
+
+  print "${message}" >&2
+  print "Type '${expected}' to continue:" >&2
+  local value
+  read -r value || true
+  [ "${value}" = "${expected}" ]
+}
+
+ensure_linux_user() {
+  local username="$1"
+
+  if [ -z "${username}" ]; then
+    die "DEPLOY_USER is empty"
+  fi
+  if [ "${username}" = "root" ]; then
+    die "Refusing to manage root user"
+  fi
+
+  if id -u "${username}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  print "[fresh] Creating user: ${username}"
+  if command -v adduser >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" "${username}"
+  else
+    useradd -m -s /bin/bash "${username}"
+  fi
+
+  if getent group sudo >/dev/null 2>&1; then
+    usermod -aG sudo "${username}" || true
+  fi
+}
+
+maybe_delete_and_recreate_user() {
+  local username="$1"
+
+  if [ "${RECREATE_DEPLOY_USER}" != "true" ]; then
+    ensure_linux_user "${username}"
+    return 0
+  fi
+
+  if ! id -u "${username}" >/dev/null 2>&1; then
+    ensure_linux_user "${username}"
+    return 0
+  fi
+
+  print
+  print "[fresh] DANGEROUS: delete + recreate user '${username}'"
+  print "[fresh] This removes /home/${username} and all files owned by that user."
+  if ! confirm_by_typing "DELETE ${username}" "[fresh] Confirm user deletion"; then
+    print "[fresh] Cancelled. Keeping existing user '${username}'."
+    return 0
+  fi
+
+  pkill -u "${username}" >/dev/null 2>&1 || true
+  userdel -r "${username}" >/dev/null 2>&1 || userdel "${username}" || true
+  ensure_linux_user "${username}"
 }
 
 install_prereqs() {
@@ -121,8 +220,25 @@ main() {
     fi
   fi
 
+  if [ -z "${DEPLOY_USER}" ] && is_interactive; then
+    DEPLOY_USER="$(prompt "Deploy username (optional; blank to skip)" "taxi")"
+    # allow skipping by entering empty
+    if [ "${DEPLOY_USER}" = "taxi" ]; then
+      :
+    fi
+  fi
+
+  if [ -n "${DEPLOY_USER}" ]; then
+    maybe_delete_and_recreate_user "${DEPLOY_USER}"
+  fi
+
   clone_or_update_repo
   ensure_env_file
+
+  if [ -n "${DEPLOY_USER}" ]; then
+    print "[fresh] Setting repo ownership to ${DEPLOY_USER}"
+    chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "${INSTALL_DIR}" || true
+  fi
 
   if [ -n "${vps_ip}" ]; then
     print "[fresh] Writing VPS_IP=${vps_ip} into .env.production"

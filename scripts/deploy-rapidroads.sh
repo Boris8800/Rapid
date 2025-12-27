@@ -184,6 +184,59 @@ install_docker_compose() {
   fi
 }
 
+ports_in_use_80_443() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null | awk 'NR==1 || $4 ~ /:80$|:443$/' | tail -n +2 | grep -q .
+    return $?
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -lntp 2>/dev/null | awk 'NR==1 || $4 ~ /:80$|:443$/' | tail -n +3 | grep -q .
+    return $?
+  fi
+  return 1
+}
+
+free_ports_80_443_if_needed() {
+  if ! ports_in_use_80_443; then
+    return 0
+  fi
+
+  print "[deploy] Ports 80/443 appear to be in use (apache/nginx/caddy?)."
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp | awk 'NR==1 || $4 ~ /:80$|:443$/' || true
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -lntp | awk 'NR==1 || $4 ~ /:80$|:443$/' || true
+  fi
+
+  if ! is_interactive; then
+    print "[deploy] Non-interactive mode: cannot auto-stop services. Stop them and re-run." >&2
+    return 1
+  fi
+
+  if ! prompt_yes_no "Stop common services using 80/443 now (apache2/nginx/caddy/lighttpd)?" true; then
+    return 1
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    for svc in apache2 nginx caddy lighttpd httpd; do
+      if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
+        systemctl stop "${svc}" >/dev/null 2>&1 || true
+        systemctl disable "${svc}" >/dev/null 2>&1 || true
+      fi
+    done
+  else
+    print "[deploy] systemctl not found; cannot auto-stop services." >&2
+    return 1
+  fi
+
+  if ports_in_use_80_443; then
+    print "[deploy] Ports 80/443 are still in use. Please stop the process manually and re-run." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 ensure_env_file() {
   if [ -f ./.env.production ]; then
     # Basic safety check for placeholder secrets
@@ -361,6 +414,9 @@ main() {
 
   step "Installing base packages (ufw, fail2ban, openssl, curl)"
   install_base_packages
+
+  step "Checking ports 80/443 (freeing if needed)"
+  free_ports_80_443_if_needed || true
 
   step "Installing Docker (if needed)"
   install_docker
