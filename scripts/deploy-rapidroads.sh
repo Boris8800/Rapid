@@ -13,6 +13,74 @@ SKIP_LETSENCRYPT="${SKIP_LETSENCRYPT:-false}"
 
 print() { printf '%s\n' "$*"; }
 
+is_interactive() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default_yes="${2:-true}"
+
+  if ! is_interactive; then
+    return 1
+  fi
+
+  local suffix
+  if [ "${default_yes}" = "true" ]; then
+    suffix="[Y/n]"
+  else
+    suffix="[y/N]"
+  fi
+
+  local reply
+  while true; do
+    printf '%s %s: ' "${prompt}" "${suffix}" >&2
+    read -r reply || true
+    reply="${reply:-}"
+
+    if [ -z "${reply}" ]; then
+      [ "${default_yes}" = "true" ] && return 0
+      return 1
+    fi
+
+    case "${reply}" in
+      y|Y|yes|YES) return 0 ;;
+      n|N|no|NO) return 1 ;;
+      *) print "Please answer y/n." >&2 ;;
+    esac
+  done
+}
+
+open_editor_if_possible() {
+  local file="$1"
+
+  if ! is_interactive; then
+    return 1
+  fi
+
+  if command -v nano >/dev/null 2>&1; then
+    nano "${file}"
+    return 0
+  fi
+
+  if command -v vim >/dev/null 2>&1; then
+    vim "${file}"
+    return 0
+  fi
+
+  if command -v vi >/dev/null 2>&1; then
+    vi "${file}"
+    return 0
+  fi
+
+  return 1
+}
+
+env_has_placeholders() {
+  local file="$1"
+  grep -Eq 'ChangeMe_|secure_password_here|your_jwt_secret_here|your_refresh_secret_here' "${file}"
+}
+
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     print "Run as root (sudo)." >&2
@@ -110,10 +178,35 @@ ensure_env_file() {
     # Basic safety check for placeholder secrets
     autofill_env_secrets_if_requested ./.env.production
 
-    if grep -Eq 'ChangeMe_|secure_password_here|your_jwt_secret_here|your_refresh_secret_here' ./.env.production; then
+    if env_has_placeholders ./.env.production; then
+      if [ "${AUTO_GENERATE_SECRETS}" = "true" ]; then
+        # already attempted autofill, but keep going if it succeeded
+        if env_has_placeholders ./.env.production; then
+          print "[deploy] .env.production still contains placeholder values after AUTO_GENERATE_SECRETS=true." >&2
+          print "[deploy] Edit .env.production and replace placeholders." >&2
+          exit 1
+        fi
+        return
+      fi
+
       print "[deploy] .env.production still contains placeholder values." >&2
-      print "[deploy] Fix them and re-run, or set AUTO_GENERATE_SECRETS=true to auto-fill." >&2
-      exit 1
+      print "[deploy] This is normal on first deploy. We can auto-generate safe secrets now." >&2
+
+      if prompt_yes_no "Auto-generate secrets now (recommended)?" true; then
+        AUTO_GENERATE_SECRETS=true
+        autofill_env_secrets_if_requested ./.env.production
+      else
+        print "[deploy] Opening .env.production for editing." >&2
+        if ! open_editor_if_possible ./.env.production; then
+          print "[deploy] No editor found (nano/vim). Edit the file manually: ./.env.production" >&2
+        fi
+      fi
+
+      if env_has_placeholders ./.env.production; then
+        print "[deploy] .env.production still contains placeholder values." >&2
+        print "[deploy] Please replace them, then re-run deploy." >&2
+        exit 1
+      fi
     fi
     return
   fi
@@ -125,9 +218,23 @@ ensure_env_file() {
 
   cp ./.env.production.example ./.env.production
   print "[deploy] Created .env.production from .env.production.example"
-  print "[deploy] IMPORTANT: Edit .env.production and set real secrets before re-running deploy."
-  print "[deploy] Or re-run with AUTO_GENERATE_SECRETS=true to auto-fill secrets."
-  exit 1
+  print "[deploy] Next: set secrets (auto-generate recommended)"
+
+  if prompt_yes_no "Auto-generate secrets in .env.production now?" true; then
+    AUTO_GENERATE_SECRETS=true
+    autofill_env_secrets_if_requested ./.env.production
+  else
+    print "[deploy] Opening .env.production for editing." >&2
+    if ! open_editor_if_possible ./.env.production; then
+      print "[deploy] No editor found (nano/vim). Edit the file manually: ./.env.production" >&2
+    fi
+  fi
+
+  if env_has_placeholders ./.env.production; then
+    print "[deploy] .env.production still contains placeholder values." >&2
+    print "[deploy] Please replace them, then re-run deploy." >&2
+    exit 1
+  fi
 }
 
 enable_firewall() {
@@ -282,10 +389,12 @@ main() {
   fi
 
   print "Deployment complete. URLs:"
-  print "- https://rapidroad.uk"
-  print "- https://driver.rapidroad.uk"
-  print "- https://admin.rapidroad.uk"
-  print "- https://api.rapidroad.uk"
+  local domain_root
+  domain_root="${DOMAIN_ROOT:-${DOMAIN}}"
+  print "- https://${domain_root}"
+  print "- https://driver.${domain_root}"
+  print "- https://admin.${domain_root}"
+  print "- https://api.${domain_root}"
 }
 
 main "$@"
